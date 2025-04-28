@@ -1,16 +1,20 @@
 const mongoose = require('mongoose');
 
+const WorkSessionSchema = new mongoose.Schema({
+    start: { type: Date, required: true },
+    end: { type: Date } // null if not ended yet
+});
+
 const BreakSchema = new mongoose.Schema({
     type: { type: String, enum: ['lunch', 'short'], required: true },
-    start: Date,
-    end: Date
+    start: { type: Date, required: true },
+    end: { type: Date } // null if ongoing
 });
 
 const AttendanceSchema = new mongoose.Schema({
-    user: String,
-    date: String,
-    checkIn: Date,
-    checkOut: Date,
+    user: { type: String, required: true },
+    date: { type: String, required: true }, // 'YYYY-MM-DD'
+    workSessions: [WorkSessionSchema],
     breaks: [BreakSchema]
 });
 

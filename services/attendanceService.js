@@ -8,49 +8,85 @@ exports.processCommand = async (command, user, text) => {
 
     let record = await Attendance.findOne({ user, date: today });
 
-    // TO-DO use this for full time and date {moment(now).tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss')}
+    if (!record) {
+        record = new Attendance({ user, date: today, workSessions: [], breaks: [] });
+    }
+
     switch (command) {
         case '/checkin':
-            if (record?.checkIn) {
-                return `${user}, you already checked in at ${moment(record.checkIn).tz('Asia/Kolkata').format('HH:mm')} 🕒`;
-            }
-            if (!record) {
-                record = new Attendance({ user, date: today });
-            }
-            record.checkIn = now;
-            await record.save();
-            return slackClient.postToChannel(`${user} checked in ✅ at ${moment(now).tz('Asia/Kolkata').format('HH:mm')}`);
+            {
+                // If currently on a break, end the break
+                const lastBreak = record.breaks[record.breaks.length - 1];
+                if (lastBreak && !lastBreak.end) {
+                    lastBreak.end = now;
+                }
 
+                // Check if already working
+                const lastSession = record.workSessions[record.workSessions.length - 1];
+                if (lastSession && !lastSession.end) {
+                    return `${user}, you are already checked in since ${moment(lastSession.start).tz('Asia/Kolkata').format('HH:mm')} 🕒`;
+                }
+
+                // Start new work session
+                record.workSessions.push({ start: now, end: null });
+                await record.save();
+
+                return slackClient.postToChannel(`${user} checked in ✅ at ${moment(now).tz('Asia/Kolkata').format('HH:mm')}`);
+            }
         case '/checkout':
-            if (!record?.checkIn) {
-                return `${user}, you haven’t checked in today.`;
-            }
-            if (record.checkOut) {
-                return `${user}, you already checked out at ${moment(record.checkOut).tz('Asia/Kolkata').format('HH:mm')}`;
-            }
-            record.checkOut = now;
-            await record.save();
+            {
+                const lastSession = record.workSessions[record.workSessions.length - 1];
+                if (!lastSession || lastSession.end) {
+                    return `${user}, you are not currently checked in.`;
+                }
 
-            const duration = moment.duration(moment(now).diff(moment(record.checkIn)));
-            const hours = duration.hours();
-            const minutes = duration.minutes();
-            return slackClient.postToChannel(`${user} checked out 📴 at ${moment(now).tz('Asia/Kolkata').format('HH:mm')}. Worked ${hours}h ${minutes}m`);
+                lastSession.end = now;
+                await record.save();
 
+                // Calculate total work time
+                const totalWorkMinutes = record.workSessions.reduce((acc, session) => {
+                    if (session.start && session.end) {
+                        return acc + moment(session.end).diff(moment(session.start), 'minutes');
+                    }
+                    return acc;
+                }, 0);
+
+                // Calculate total break time
+                const totalBreakMinutes = record.breaks.reduce((acc, b) => {
+                    if (b.start && b.end) {
+                        return acc + moment(b.end).diff(moment(b.start), 'minutes');
+                    }
+                    return acc;
+                }, 0);
+
+                const workHours = Math.floor(totalWorkMinutes / 60);
+                const workMinutes = totalWorkMinutes % 60;
+                const breakHours = Math.floor(totalBreakMinutes / 60);
+                const breakMinutes = totalBreakMinutes % 60;
+
+                return slackClient.postToChannel(`${user} checked out 📴 at ${moment(now).tz('Asia/Kolkata').format('HH:mm')}.
+Worked ${workHours}h ${workMinutes}m. Break Time ${breakHours}h ${breakMinutes}m`);
+            }
         case '/break':
-            if (!record?.checkIn) return `${user}, you must check in before taking a break.`;
+            {
+                const validTypes = ['lunch', 'short'];
+                if (!validTypes.includes(text)) return `Unknown break type: "${text}"`;
 
-            const validTypes = ['lunch', 'short'];
-            if (!validTypes.includes(text)) return `Unknown break type: "${text}"`;
+                // Must be working to take a break
+                const lastSession = record.workSessions[record.workSessions.length - 1];
+                if (!lastSession || lastSession.end) {
+                    return `${user}, you must be working (checked in) to take a break.`;
+                }
 
-            const currentBreak = {
-                type: text,
-                start: now,
-                end: now
-            };
+                // End the current work session
+                lastSession.end = now;
 
-            record.breaks.push(currentBreak);
-            await record.save();
-            return slackClient.postToChannel(`${user} is on a ${text} break ${text === 'lunch' ? '🍱' : '☕'}`);
+                // Start a new break
+                record.breaks.push({ type: text, start: now, end: null });
+                await record.save();
+
+                return slackClient.postToChannel(`${user} is on a ${text} break ${text === 'lunch' ? '🍱' : '☕'}`);
+            }
 
         default:
             return `Unknown command: ${command}`;
